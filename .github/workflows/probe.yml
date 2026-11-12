@@ -1,0 +1,59 @@
+name: Sonda
+
+# Sonda externa da plataforma KREVO (ADR-031 no repositório principal).
+# A cada 15 minutos testa, pela internet, os 5 subdomínios. Falha = e-mail do GitHub e push no
+# app GitHub Mobile para quem mantém este repositório.
+# Uma vez por mês, reativa o próprio agendamento e faz um commit de manutenção: o GitHub desativa
+# workflows agendados de repositórios públicos depois de 60 dias sem atividade.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '23 10 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  probe:
+    name: Testar os 5 subdomínios
+    if: github.event.schedule != '23 10 1 * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Testar endpoints
+        run: |
+          fail=0
+          for url in \
+            https://app.krevo.company/api/health \
+            https://api.krevo.company/health \
+            https://ws.krevo.company/health \
+            https://t.krevo.company/health \
+            https://files.krevo.company/health; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+              --retry 2 --retry-delay 10 --retry-all-errors "$url" || true)
+            echo "$url -> ${code:-sem resposta}"
+            [ "$code" = 200 ] || fail=1
+          done
+          exit $fail
+
+  keepalive:
+    name: Manutenção mensal
+    if: github.event.schedule == '23 10 1 * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reativar o agendamento
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/probe.yml/enable"
+      - name: Commit de manutenção
+        run: |
+          date -u +%FT%TZ > .keepalive
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .keepalive
+          git commit -m "chore: keepalive $(date -u +%F)"
+          git push
